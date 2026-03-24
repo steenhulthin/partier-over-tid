@@ -12,10 +12,40 @@ df = pd.read_csv(DATA_PATH, parse_dates=["election_date", "next_election_date"])
 df["election_year"] = df["election_date"].dt.year
 df["label"] = df["election_date"].dt.strftime("%Y-%m-%d")
 
+correlation = df["parties_in_folketing"].corr(df["days_to_next_election"])
+r_squared = correlation ** 2
+x_mean = df["days_to_next_election"].mean()
+y_mean = df["parties_in_folketing"].mean()
+covariance = (
+    (df["days_to_next_election"] - x_mean) * (df["parties_in_folketing"] - y_mean)
+).sum()
+variance_x = ((df["days_to_next_election"] - x_mean) ** 2).sum()
+slope = covariance / variance_x
+intercept = y_mean - slope * x_mean
+
 SOURCE_TEXT = (
-    "Kilde: Danmarks Statistik, temaet Folketingsvalg samt historiske oversigter i Statistisk Aarbog. "
+    "Kilde: Danmarks Statistik, temaet Folketingsvalg samt historiske oversigter i Statistisk Årbog. "
     "Note: Ved folketingsvalget 1994 blev Jacob Haugaard valgt uden for partierne og er ikke talt med som parti."
 )
+
+if abs(correlation) < 0.2:
+    RELATION_TEXT = (
+        f"Sammenhængen er meget svag. Korrelationskoefficienten er {correlation:.2f}, "
+        f"og en simpel lineær model forklarer kun cirka {r_squared:.0%} af variationen. "
+        "Det er derfor ikke rimeligt at sige, at flere partier ved et valg i sig selv hænger tydeligt sammen "
+        "med, hvor lang tid der går til næste valg."
+    )
+elif abs(correlation) < 0.4:
+    RELATION_TEXT = (
+        f"Sammenhængen er svag. Korrelationskoefficienten er {correlation:.2f}, "
+        f"og en simpel lineær model forklarer cirka {r_squared:.0%} af variationen. "
+        "Det peger på et mønster, men ikke på en stærk eller stabil sammenhæng."
+    )
+else:
+    RELATION_TEXT = (
+        f"Sammenhængen er tydeligere end svag. Korrelationskoefficienten er {correlation:.2f}, "
+        f"og en simpel lineær model forklarer cirka {r_squared:.0%} af variationen."
+    )
 
 
 app_ui = ui.page_fillable(
@@ -76,15 +106,22 @@ app_ui = ui.page_fillable(
             font-size: 0.93rem;
             line-height: 1.45;
         }
+        .analysis-note {
+            margin: 0;
+            padding: 0 1rem 1rem;
+            color: #3f3a34;
+            font-size: 0.98rem;
+            line-height: 1.55;
+        }
         """
     ),
     ui.div(
         {"class": "app-shell"},
         ui.h1("Partier i Folketinget ved valg", class_="app-title"),
         ui.p(
-            "Tidsserien viser antal partier ved hvert folketingsvalg. Nederst ses sammenhaengen mellem "
-            "valgperiodens laengde og antallet af partier ved valget. Sidste observation bruger "
-            "2026-03-24 som foreloebig naeste valgdato.",
+            "Tidsserien viser antal partier ved hvert folketingsvalg. Nederst ses sammenhængen mellem "
+            "valgperiodens længde og antallet af partier ved valget. Sidste observation bruger "
+            "2026-03-24 som foreløbig næste valgdato.",
             class_="app-subtitle",
         ),
         ui.layout_column_wrap(
@@ -97,6 +134,7 @@ app_ui = ui.page_fillable(
             ui.card(
                 ui.card_header("Valgperiode i dage og antal partier"),
                 ui.output_ui("scatter_plot"),
+                ui.p(RELATION_TEXT, class_="analysis-note"),
                 ui.p(SOURCE_TEXT, class_="source-note"),
                 full_screen=True,
             ),
@@ -138,12 +176,7 @@ def server(input, output, session):
             go.Scatter(
                 x=df["election_date"],
                 y=df["parties_in_folketing"],
-                mode="lines+markers+text",
-                text=[
-                    f"{year}: {parties}" if year in {1945, 1973, 1977, 2022} else ""
-                    for year, parties in zip(df["election_year"], df["parties_in_folketing"])
-                ],
-                textposition="top center",
+                mode="lines+markers",
                 line={"color": "#bc4b32", "width": 3},
                 marker={
                     "size": 9,
@@ -156,7 +189,7 @@ def server(input, output, session):
                 hovertemplate=(
                     "<b>Valg:</b> %{x|%Y-%m-%d}<br>"
                     "<b>Partier:</b> %{y}<br>"
-                    "<b>Dage til naeste valg:</b> %{customdata[0]}<br>"
+                    "<b>Dage til næste valg:</b> %{customdata[0]}<br>"
                     "<b>Note:</b> %{customdata[1]}<extra></extra>"
                 ),
             )
@@ -183,6 +216,8 @@ def server(input, output, session):
     @render.ui
     def scatter_plot():
         fig = go.Figure()
+        trend_x = [df["days_to_next_election"].min(), df["days_to_next_election"].max()]
+        trend_y = [slope * x + intercept for x in trend_x]
         fig.add_trace(
             go.Scatter(
                 x=df["days_to_next_election"],
@@ -204,15 +239,29 @@ def server(input, output, session):
                 customdata=df[["label", "note"]].fillna("").values,
                 hovertemplate=(
                     "<b>Valg:</b> %{customdata[0]}<br>"
-                    "<b>Dage til naeste valg:</b> %{x}<br>"
+                    "<b>Dage til næste valg:</b> %{x}<br>"
                     "<b>Partier:</b> %{y}<br>"
                     "<b>Note:</b> %{customdata[1]}<extra></extra>"
                 ),
             )
         )
-        fig.update_layout(**_common_layout("Valgperiodens laengde og antal partier"))
+        fig.add_trace(
+            go.Scatter(
+                x=trend_x,
+                y=trend_y,
+                mode="lines",
+                line={"color": "#5e3023", "width": 2, "dash": "dash"},
+                hovertemplate=(
+                    "<b>Trendlinje</b><br>"
+                    f"<b>Korrelationskoefficient:</b> {correlation:.2f}<br>"
+                    f"<b>Forklaret variation (R²):</b> {r_squared:.2%}<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+        fig.update_layout(**_common_layout("Valgperiodens længde og antal partier"))
         fig.update_xaxes(
-            title="Dage til naeste valg",
+            title="Dage til næste valg",
             gridcolor="#d9cdbd",
             linecolor="#a89b8d",
         )
